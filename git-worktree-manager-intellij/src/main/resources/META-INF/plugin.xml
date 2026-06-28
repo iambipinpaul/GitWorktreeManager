@@ -13,6 +13,11 @@ Manage Git worktrees from within JetBrains IDEs. List, add, remove, and open Git
 </ul>
 ]]></description>
     <change-notes><![CDATA[
+1.0.20:
+<ul>
+<li>"Open in IDE" now detects solution files located in a subdirectory of a worktree, not just the root.</li>
+</ul>
+
 1.0.19:
 <ul>
 <li>Enabled process-scoped Git long path support for Windows worktree commands.</li>

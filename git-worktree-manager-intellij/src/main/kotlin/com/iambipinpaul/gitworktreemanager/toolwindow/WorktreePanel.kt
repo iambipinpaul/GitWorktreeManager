@@ -380,10 +380,69 @@ class WorktreePanel(private val project: Project) : JBPanel<WorktreePanel>(Borde
             return root
         }
 
-        val files = root.listFiles()?.filter { it.isFile } ?: return root
-        val preferred = files.firstOrNull { it.extension.equals("slnx", ignoreCase = true) }
-            ?: files.firstOrNull { it.extension.equals("sln", ignoreCase = true) }
-        return preferred ?: root
+        // Prefer a solution at the root so the common case stays fast, then fall back
+        // to a bounded recursive search so a solution in a subdirectory is still found.
+        val rootSolution = pickSolution(enumerateSolutionFiles(root, maxDepth = 0))
+        if (rootSolution != null) {
+            return rootSolution
+        }
+
+        val nestedSolution = pickSolution(enumerateSolutionFiles(root, MAX_SOLUTION_SEARCH_DEPTH))
+        return nestedSolution ?: root
+    }
+
+    /**
+     * Chooses a single solution file from the candidates, preferring `.slnx` over `.sln`
+     * when both are present. Returns `null` when the choice is ambiguous (no candidates,
+     * or multiple of the preferred kind).
+     */
+    private fun pickSolution(files: List<File>): File? {
+        if (files.isEmpty()) {
+            return null
+        }
+
+        // Prefer .slnx over .sln when both exist (kept in sync with the VS extension).
+        val slnx = files.filter { it.extension.equals("slnx", ignoreCase = true) }
+        val candidates = if (slnx.isNotEmpty()) slnx else files
+        return candidates.singleOrNull()
+    }
+
+    /**
+     * Recursively collects `.sln`/`.slnx` files up to [maxDepth] levels below [root],
+     * skipping build and tooling directories.
+     */
+    private fun enumerateSolutionFiles(root: File, maxDepth: Int): List<File> {
+        val results = mutableListOf<File>()
+        collectSolutionFiles(root, maxDepth, results)
+        return results
+    }
+
+    private fun collectSolutionFiles(directory: File, remainingDepth: Int, results: MutableList<File>) {
+        val entries = directory.listFiles() ?: return
+
+        for (entry in entries) {
+            if (entry.isFile &&
+                (entry.extension.equals("sln", ignoreCase = true) ||
+                    entry.extension.equals("slnx", ignoreCase = true))
+            ) {
+                results.add(entry)
+            }
+        }
+
+        if (remainingDepth <= 0) {
+            return
+        }
+
+        for (entry in entries) {
+            if (!entry.isDirectory) {
+                continue
+            }
+            val name = entry.name
+            if (name.startsWith('.') || EXCLUDED_SEARCH_DIRECTORIES.any { it.equals(name, ignoreCase = true) }) {
+                continue
+            }
+            collectSolutionFiles(entry, remainingDepth - 1, results)
+        }
     }
 
     private fun setLoading(isLoading: Boolean) {
@@ -550,5 +609,18 @@ class WorktreePanel(private val project: Project) : JBPanel<WorktreePanel>(Borde
             }
             tagPanel.isVisible = tags.isNotEmpty()
         }
+    }
+
+    private companion object {
+        /** Maximum directory depth to search when no solution is found at the worktree root. */
+        const val MAX_SOLUTION_SEARCH_DEPTH = 4
+
+        /**
+         * Directories skipped while searching for solution files because they never
+         * contain a user-authored solution and can be expensive to traverse.
+         */
+        val EXCLUDED_SEARCH_DIRECTORIES = listOf(
+            ".git", "bin", "obj", "node_modules", ".vs", ".vscode", "packages", "TestResults"
+        )
     }
 }
