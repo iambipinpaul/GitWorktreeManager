@@ -855,8 +855,9 @@ public class WorktreeViewModel : INotifyPropertyChanged
                     {
                         var dialog = new DeleteConfirmationDialog(_extensibility);
                         bool confirmed = await dialog.ShowAsync(
-                            worktreeItem.DisplayPath, // User must type this name
+                            worktreeItem.DisplayPath,
                             worktreeItem.Path,
+                            isLocked,
                             cancellationToken);
 
                         if (confirmed)

@@ -313,7 +313,7 @@ class WorktreePanel(private val project: Project) : JBPanel<WorktreePanel>(Borde
 
             if (!force && shouldOfferForceRemove(lower)) {
                 ApplicationManager.getApplication().invokeLater {
-                    val dialog = DeleteConfirmationDialog(project, worktree)
+                    val dialog = DeleteConfirmationDialog(project, worktree, isLockedError(lower))
                     if (dialog.showAndGet() && dialog.forceRemove) {
                         removeWorktree(root, worktree, true)
                     }
@@ -347,7 +347,11 @@ class WorktreePanel(private val project: Project) : JBPanel<WorktreePanel>(Borde
         return errorMessage.contains("modified or untracked files") ||
             errorMessage.contains("contains modified or untracked files") ||
             errorMessage.contains("forcing it") ||
-            errorMessage.contains("locked working tree") ||
+            isLockedError(errorMessage)
+    }
+
+    private fun isLockedError(errorMessage: String): Boolean {
+        return errorMessage.contains("locked working tree") ||
             errorMessage.contains("remove -f -f") ||
             errorMessage.contains("unlock first")
     }

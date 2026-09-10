@@ -23,9 +23,17 @@ public class DeleteConfirmationDialog
     public async Task<bool> ShowAsync(
         string worktreeName,
         string worktreePath,
+        bool isLocked = false,
         CancellationToken cancellationToken = default)
     {
-        var dialogData = new DeleteConfirmationDialogData { WorktreeName = worktreeName, WorktreePath = worktreePath };
+        var dialogData = new DeleteConfirmationDialogData
+        {
+            WorktreeName = worktreeName,
+            WorktreePath = worktreePath,
+            ConfirmationText = isLocked
+                ? "I understand this will override the lock and the worktree will be PERMANENTLY deleted."
+                : "I understand that uncommitted changes will be PERMANENTLY lost."
+        };
 
         // Create completion source for result
         var resultTcs = new TaskCompletionSource<bool>();
@@ -44,6 +52,18 @@ public class DeleteConfirmationDialog
         {
             resultTcs.TrySetResult(false);
             await dialogCts.CancelAsync();
+        });
+
+        dialogData.CopyNameCommand = new AsyncCommand((_, _) =>
+        {
+            CopyToClipboard(worktreeName);
+            return Task.CompletedTask;
+        });
+
+        dialogData.CopyPathCommand = new AsyncCommand((_, _) =>
+        {
+            CopyToClipboard(worktreePath);
+            return Task.CompletedTask;
         });
 
         // Trigger initial validation
@@ -78,5 +98,20 @@ public class DeleteConfirmationDialog
         }
 
         return false;
+    }
+
+    private static void CopyToClipboard(string text)
+    {
+        try
+        {
+            var thread = new Thread(() => { System.Windows.Clipboard.SetDataObject(text, true); });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            thread.Join();
+        }
+        catch
+        {
+            // Best effort — clipboard may be unavailable.
+        }
     }
 }
