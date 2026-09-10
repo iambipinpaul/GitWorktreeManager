@@ -75,18 +75,6 @@ public class DeleteConfirmationDialogData : INotifyPropertyChanged
     [DataMember]
     public IAsyncCommand? CancelCommand { get; set; }
 
-    /// <summary>
-    /// Copies the worktree name to the clipboard.
-    /// </summary>
-    [DataMember]
-    public IAsyncCommand? CopyNameCommand { get; set; }
-
-    /// <summary>
-    /// Copies the worktree path to the clipboard.
-    /// </summary>
-    [DataMember]
-    public IAsyncCommand? CopyPathCommand { get; set; }
-
     public void Validate()
     {
         // Valid only if the risk is accepted

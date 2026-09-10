@@ -54,18 +54,6 @@ public class DeleteConfirmationDialog
             await dialogCts.CancelAsync();
         });
 
-        dialogData.CopyNameCommand = new AsyncCommand((_, _) =>
-        {
-            CopyToClipboard(worktreeName);
-            return Task.CompletedTask;
-        });
-
-        dialogData.CopyPathCommand = new AsyncCommand((_, _) =>
-        {
-            CopyToClipboard(worktreePath);
-            return Task.CompletedTask;
-        });
-
         // Trigger initial validation
         dialogData.Validate();
 
@@ -98,20 +86,5 @@ public class DeleteConfirmationDialog
         }
 
         return false;
-    }
-
-    private static void CopyToClipboard(string text)
-    {
-        try
-        {
-            var thread = new Thread(() => { System.Windows.Clipboard.SetDataObject(text, true); });
-            thread.SetApartmentState(ApartmentState.STA);
-            thread.Start();
-            thread.Join();
-        }
-        catch
-        {
-            // Best effort — clipboard may be unavailable.
-        }
     }
 }

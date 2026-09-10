@@ -32,17 +32,6 @@
                 <Run Text="." />
             </TextBlock>
 
-            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                <Button Content="Copy name"
-                        Command="{Binding CopyNameCommand}"
-                        Padding="8,2" Margin="0,0,8,0"
-                        ToolTip="Copy worktree name to clipboard" />
-                <Button Content="Copy path"
-                        Command="{Binding CopyPathCommand}"
-                        Padding="8,2"
-                        ToolTip="Copy worktree path to clipboard" />
-            </StackPanel>
-
             <TextBlock TextWrapping="Wrap" Margin="0,0,0,4">
                 <Run Text="Path: " FontWeight="Bold" />
                 <Run Text="{Binding WorktreePath}" />
