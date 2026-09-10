@@ -846,10 +846,10 @@ public class WorktreeViewModel : INotifyPropertyChanged
                             "Cannot remove worktree - files may be in use. Please close any open files or applications using this worktree.";
                     }
                 }
-                else if (errorMessage.Contains("modified or untracked files") ||
-                         errorMessage.Contains("contains modified or untracked files") ||
-                         errorMessage.Contains("forcing it"))
+                else if (GitService.ShouldOfferForceRemove(errorMessage))
                 {
+                    bool isLocked = GitService.IsLockedWorktreeError(errorMessage);
+
                     // If we haven't already tried to force remove, ask the user if they want to
                     if (!force && _extensibility != null)
                     {
@@ -884,8 +884,9 @@ public class WorktreeViewModel : INotifyPropertyChanged
                         }
                     }
 
-                    errorMessage =
-                        "Worktree has uncommitted changes. Commit or stash your changes, or force remove using the dialog.";
+                    errorMessage = isLocked
+                        ? "Worktree is locked. Force remove will override the lock and delete the worktree folder."
+                        : "Worktree has uncommitted changes. Commit or stash your changes, or force remove using the dialog.";
                 }
 
                 ErrorMessage = errorMessage;

@@ -93,4 +93,30 @@ public class GitServiceTests
         result.Should().Contain(pathWithSpaces);
         result.Should().HaveCount(4);
     }
+
+    [Theory]
+    [InlineData("fatal: 'my-worktree' contains modified or untracked files, use --force to delete it")]
+    [InlineData("fatal: 'my-worktree' has modified or untracked files")]
+    [InlineData("error: forcing it would lose data")]
+    public void IsDirtyWorktreeError_WithDirtyMessages_ReturnsTrue(string errorMessage)
+    {
+        GitService.IsDirtyWorktreeError(errorMessage).Should().BeTrue();
+        GitService.ShouldOfferForceRemove(errorMessage).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("fatal: cannot remove a locked working tree, lock reason: initializing use 'remove -f -f' to override or unlock first")]
+    [InlineData("fatal: 'my-worktree' is locked, use -f -f to override")]
+    [InlineData("hint: unlock first with 'git worktree unlock'")]
+    public void IsLockedWorktreeError_WithLockedMessages_ReturnsTrue(string errorMessage)
+    {
+        GitService.IsLockedWorktreeError(errorMessage).Should().BeTrue();
+        GitService.ShouldOfferForceRemove(errorMessage).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShouldOfferForceRemove_WithUnrelatedError_ReturnsFalse()
+    {
+        GitService.ShouldOfferForceRemove("fatal: 'missing-branch' is not a commit").Should().BeFalse();
+    }
 }

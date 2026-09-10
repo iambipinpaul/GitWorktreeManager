@@ -125,8 +125,11 @@ public class GitService : IGitService
         CancellationToken cancellationToken = default)
     {
         // Build command: git worktree remove [--force] <path>
+        // A single --force removes dirty worktrees, but locked worktrees require
+        // -f -f (e.g. "cannot remove a locked working tree ... use 'remove -f -f'").
+        // Send --force twice whenever force is requested so one flag covers both.
         List<string> arguments = force
-            ? new List<string> { "worktree", "remove", "--force", worktreePath }
+            ? new List<string> { "worktree", "remove", "--force", "--force", worktreePath }
             : new List<string> { "worktree", "remove", worktreePath };
 
         _logger?.LogInformation($"Removing worktree: path='{worktreePath}', force={force}");
@@ -422,6 +425,47 @@ public class GitService : IGitService
             ? $"\"{arg.Replace("\"", "\\\"")}\""
             : arg;
     }
+
+    /// <summary>
+    /// Indicates whether a remove failure is caused by uncommitted changes,
+    /// in which case the user can be offered a force remove.
+    /// </summary>
+    public static bool IsDirtyWorktreeError(string? errorMessage)
+    {
+        if (string.IsNullOrWhiteSpace(errorMessage))
+        {
+            return false;
+        }
+
+        return errorMessage.Contains("modified or untracked files", StringComparison.OrdinalIgnoreCase) ||
+            errorMessage.Contains("contains modified or untracked files", StringComparison.OrdinalIgnoreCase) ||
+            errorMessage.Contains("forcing it", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Indicates whether a remove failure is caused by a worktree lock,
+    /// in which case the user can be offered a force remove (sent as -f -f).
+    /// </summary>
+    public static bool IsLockedWorktreeError(string? errorMessage)
+    {
+        if (string.IsNullOrWhiteSpace(errorMessage))
+        {
+            return false;
+        }
+
+        return errorMessage.Contains("locked working tree", StringComparison.OrdinalIgnoreCase) ||
+            errorMessage.Contains("remove -f -f", StringComparison.OrdinalIgnoreCase) ||
+            errorMessage.Contains("unlock first", StringComparison.OrdinalIgnoreCase) ||
+            (errorMessage.Contains("locked", StringComparison.OrdinalIgnoreCase) &&
+                errorMessage.Contains("worktree", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Indicates whether a remove failure should offer the user a force remove dialog
+    /// (dirty worktree or locked worktree — force covers both).
+    /// </summary>
+    public static bool ShouldOfferForceRemove(string? errorMessage) =>
+        IsDirtyWorktreeError(errorMessage) || IsLockedWorktreeError(errorMessage);
 
     internal static bool IsLongPathError(string? errorMessage)
     {
