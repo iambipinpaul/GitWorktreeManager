@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
     <Metadata>
-        <Identity Id="IAmBipinPaul.GitWorktreeManager.e7f8a9b0-c1d2-4e3f-5a6b-7c8d9e0f1a2b" Version="1.0.20" Language="en-US" Publisher="Bipin Paul" />
+        <Identity Id="IAmBipinPaul.GitWorktreeManager.e7f8a9b0-c1d2-4e3f-5a6b-7c8d9e0f1a2b" Version="1.0.21" Language="en-US" Publisher="Bipin Paul" />
         <DisplayName>Git Worktree Manager</DisplayName>
         <Description xml:space="preserve">Manage Git worktrees from within Visual Studio. List, add, remove, and open Git worktrees directly from the IDE without leaving Visual Studio. Features include:
 • View all worktrees for your repository in a dedicated tool window
@@ -15,6 +15,14 @@
         <PreviewImage>Resources\preview.png</PreviewImage>
         <Tags>git, worktree, source control, productivity, version control, branch management</Tags>
         <ReleaseNotes>
+            1.0.21:
+            - Fixed solution detection picking a nested solution when the worktree root has multiple solutions (root now wins; folder opens for ambiguous roots).
+            - Hardened Git command arguments (no shell quoting) so paths/branches with spaces or quotes work reliably.
+            - Smoother status enrichment and search filtering (batched UI updates, debounced search).
+            - Calmer auto-follow: slower solution polling with no overlap, banner-only errors on background refresh, followed repo path shown.
+            - Fixed null-reference warnings in tool window startup.
+            - Locked worktrees now offer force remove (sent as -f -f to override the lock).
+
             1.0.20:
             - "Open in VS" now detects solution files located in a subdirectory of a worktree, not just the root.
 

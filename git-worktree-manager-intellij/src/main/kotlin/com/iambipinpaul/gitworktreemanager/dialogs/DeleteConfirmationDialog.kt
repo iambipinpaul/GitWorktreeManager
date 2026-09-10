@@ -15,8 +15,12 @@ import javax.swing.JPanel
 class DeleteConfirmationDialog(
     project: Project,
     private val worktree: Worktree,
+    private val locked: Boolean = false,
 ) : DialogWrapper(project) {
-    private val forceCheckBox = JBCheckBox("I understand uncommitted changes will be permanently lost.")
+    private val forceCheckBox = JBCheckBox(
+        if (locked) "I understand this will override the lock and permanently delete the worktree."
+        else "I understand uncommitted changes will be permanently lost."
+    )
 
     val forceRemove: Boolean
         get() = forceCheckBox.isSelected

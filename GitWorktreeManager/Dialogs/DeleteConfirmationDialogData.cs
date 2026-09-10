@@ -30,6 +30,14 @@ public class DeleteConfirmationDialogData : INotifyPropertyChanged
     public required string WorktreePath { get; init; }
 
     /// <summary>
+    /// The risk confirmation text. Differs for locked worktrees (override the lock)
+    /// versus dirty worktrees (uncommitted changes will be lost).
+    /// </summary>
+    [DataMember]
+    public string ConfirmationText { get; set; } =
+        "I understand that uncommitted changes will be PERMANENTLY lost.";
+
+    /// <summary>
     /// Whether the user has checked the confirmation box.
     /// </summary>
     [DataMember]

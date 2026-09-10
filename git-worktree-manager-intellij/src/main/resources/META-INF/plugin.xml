@@ -13,6 +13,13 @@ Manage Git worktrees from within JetBrains IDEs. List, add, remove, and open Git
 </ul>
 ]]></description>
     <change-notes><![CDATA[
+1.0.21:
+<ul>
+<li>Fixed solution detection picking a nested solution when the worktree root has multiple solutions.</li>
+<li>Locked worktrees now offer force remove to override the lock.</li>
+<li>Smoother status and filtering updates.</li>
+</ul>
+
 1.0.20:
 <ul>
 <li>"Open in IDE" now detects solution files located in a subdirectory of a worktree, not just the root.</li>

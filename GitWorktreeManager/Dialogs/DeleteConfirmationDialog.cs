@@ -23,9 +23,17 @@ public class DeleteConfirmationDialog
     public async Task<bool> ShowAsync(
         string worktreeName,
         string worktreePath,
+        bool isLocked = false,
         CancellationToken cancellationToken = default)
     {
-        var dialogData = new DeleteConfirmationDialogData { WorktreeName = worktreeName, WorktreePath = worktreePath };
+        var dialogData = new DeleteConfirmationDialogData
+        {
+            WorktreeName = worktreeName,
+            WorktreePath = worktreePath,
+            ConfirmationText = isLocked
+                ? "I understand this will override the lock and the worktree will be PERMANENTLY deleted."
+                : "I understand that uncommitted changes will be PERMANENTLY lost."
+        };
 
         // Create completion source for result
         var resultTcs = new TaskCompletionSource<bool>();

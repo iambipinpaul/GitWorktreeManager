@@ -47,7 +47,7 @@ public class GitService : IGitService
 
         GitProcessResult result = await ExecuteGitCommandAsync(
             repositoryPath,
-            "worktree list --porcelain",
+            new[] { "worktree", "list", "--porcelain" },
             cancellationToken);
 
         if (!result.Success)
@@ -75,24 +75,26 @@ public class GitService : IGitService
         // Build command: git worktree add [-b <branch>] <path> [<commit-ish>]
         // With -b: git worktree add -b <new-branch> <path> [<base-branch>]
         // Without -b: git worktree add <path> <branch>
-        string arguments;
+        // Passed as an argument list (no shell quoting) so paths/branches with
+        // spaces or quotes are handled safely.
+        List<string> arguments;
 
         if (createBranch)
         {
             // Create new branch based on another branch
             if (!string.IsNullOrEmpty(baseBranch))
             {
-                arguments = $"worktree add -b \"{branchName}\" \"{worktreePath}\" \"{baseBranch}\"";
+                arguments = new List<string> { "worktree", "add", "-b", branchName, worktreePath, baseBranch };
             }
             else
             {
-                arguments = $"worktree add -b \"{branchName}\" \"{worktreePath}\"";
+                arguments = new List<string> { "worktree", "add", "-b", branchName, worktreePath };
             }
         }
         else
         {
             // Checkout existing branch
-            arguments = $"worktree add \"{worktreePath}\" \"{branchName}\"";
+            arguments = new List<string> { "worktree", "add", worktreePath, branchName };
         }
 
         _logger?.LogInformation(
@@ -123,9 +125,12 @@ public class GitService : IGitService
         CancellationToken cancellationToken = default)
     {
         // Build command: git worktree remove [--force] <path>
-        string arguments = force
-            ? $"worktree remove --force \"{worktreePath}\""
-            : $"worktree remove \"{worktreePath}\"";
+        // A single --force removes dirty worktrees, but locked worktrees require
+        // -f -f (e.g. "cannot remove a locked working tree ... use 'remove -f -f'").
+        // Send --force twice whenever force is requested so one flag covers both.
+        List<string> arguments = force
+            ? new List<string> { "worktree", "remove", "--force", "--force", worktreePath }
+            : new List<string> { "worktree", "remove", worktreePath };
 
         _logger?.LogInformation($"Removing worktree: path='{worktreePath}', force={force}");
 
@@ -155,7 +160,7 @@ public class GitService : IGitService
 
         GitProcessResult result = await ExecuteGitCommandAsync(
             path,
-            "rev-parse --show-toplevel",
+            new[] { "rev-parse", "--show-toplevel" },
             cancellationToken);
 
         if (!result.Success || string.IsNullOrWhiteSpace(result.Output))
@@ -179,7 +184,7 @@ public class GitService : IGitService
         {
             GitProcessResult result = await ExecuteGitCommandAsync(
                 Directory.GetCurrentDirectory(),
-                "--version",
+                new[] { "--version" },
                 cancellationToken);
 
             if (result.Success)
@@ -210,13 +215,13 @@ public class GitService : IGitService
         // Get local branches
         GitProcessResult localResult = await ExecuteGitCommandAsync(
             repositoryPath,
-            "branch --format=%(refname:short)",
+            new[] { "branch", "--format=%(refname:short)" },
             cancellationToken);
 
         // Get remote branches
         GitProcessResult remoteResult = await ExecuteGitCommandAsync(
             repositoryPath,
-            "branch -r --format=%(refname:short)",
+            new[] { "branch", "-r", "--format=%(refname:short)" },
             cancellationToken);
 
         var branches = new List<string>();
@@ -249,25 +254,27 @@ public class GitService : IGitService
 
     /// <summary>
     /// Executes a Git command and returns the result.
+    /// Arguments are passed via <see cref="ProcessStartInfo.ArgumentList"/> (no shell),
+    /// so paths/branches with spaces or quotes are handled safely.
     /// </summary>
     /// <param name="workingDirectory">The working directory for the command.</param>
-    /// <param name="arguments">The Git command arguments.</param>
+    /// <param name="arguments">The Git command arguments (already split).</param>
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>The result of the command execution.</returns>
     private async Task<GitProcessResult> ExecuteGitCommandAsync(
         string workingDirectory,
-        string arguments,
+        IReadOnlyList<string> arguments,
         CancellationToken cancellationToken)
     {
         bool enableLongPathSupport = OperatingSystem.IsWindows();
-        string gitArguments = BuildGitArguments(arguments, enableLongPathSupport);
+        List<string> fullArgs = BuildGitArgumentList(arguments, enableLongPathSupport);
+        string displayArgs = string.Join(" ", fullArgs.Select(QuoteForDisplay));
 
-        _logger?.LogInformation($"Executing: git {gitArguments} (in {workingDirectory})");
+        _logger?.LogInformation($"Executing: git {displayArgs} (in {workingDirectory})");
 
         var startInfo = new ProcessStartInfo
         {
             FileName = GitExecutable,
-            Arguments = gitArguments,
             WorkingDirectory = workingDirectory,
             UseShellExecute = false,
             RedirectStandardOutput = true,
@@ -276,6 +283,10 @@ public class GitService : IGitService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+        foreach (string arg in fullArgs)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
 
         using var process = new Process { StartInfo = startInfo };
         var stdout = new StringBuilder();
@@ -315,13 +326,13 @@ public class GitService : IGitService
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
                 TryKillProcess(process);
-                _logger?.LogError($"Git command timed out after {DefaultTimeoutMs}ms: git {gitArguments}");
+                _logger?.LogError($"Git command timed out after {DefaultTimeoutMs}ms: git {displayArgs}");
                 return new GitProcessResult { Success = false, ExitCode = -1, ErrorMessage = "Git command timed out" };
             }
             catch (OperationCanceledException)
             {
                 TryKillProcess(process);
-                _logger?.LogWarning($"Git command was cancelled: git {gitArguments}");
+                _logger?.LogWarning($"Git command was cancelled: git {displayArgs}");
                 return new GitProcessResult
                 {
                     Success = false, ExitCode = -1, ErrorMessage = "Git command was cancelled"
@@ -372,7 +383,7 @@ public class GitService : IGitService
         }
         catch (Exception ex)
         {
-            _logger?.LogException(ex, $"Failed to execute Git command: git {gitArguments}");
+            _logger?.LogException(ex, $"Failed to execute Git command: git {displayArgs}");
             string errorMessage = CreateUserFacingErrorMessage(
                 $"Failed to execute Git command: {ex.Message}",
                 enableLongPathSupport);
@@ -390,6 +401,71 @@ public class GitService : IGitService
             ? $"-c core.longpaths=true {arguments}"
             : arguments;
     }
+
+    internal static List<string> BuildGitArgumentList(IEnumerable<string> arguments, bool enableLongPathSupport)
+    {
+        var args = arguments.ToList();
+        if (enableLongPathSupport)
+        {
+            args.Insert(0, "core.longpaths=true");
+            args.Insert(0, "-c");
+        }
+
+        return args;
+    }
+
+    internal static string QuoteForDisplay(string arg)
+    {
+        if (string.IsNullOrEmpty(arg))
+        {
+            return "\"\"";
+        }
+
+        return arg.Any(char.IsWhiteSpace) || arg.Contains('"')
+            ? $"\"{arg.Replace("\"", "\\\"")}\""
+            : arg;
+    }
+
+    /// <summary>
+    /// Indicates whether a remove failure is caused by uncommitted changes,
+    /// in which case the user can be offered a force remove.
+    /// </summary>
+    public static bool IsDirtyWorktreeError(string? errorMessage)
+    {
+        if (string.IsNullOrWhiteSpace(errorMessage))
+        {
+            return false;
+        }
+
+        return errorMessage.Contains("modified or untracked files", StringComparison.OrdinalIgnoreCase) ||
+            errorMessage.Contains("contains modified or untracked files", StringComparison.OrdinalIgnoreCase) ||
+            errorMessage.Contains("forcing it", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Indicates whether a remove failure is caused by a worktree lock,
+    /// in which case the user can be offered a force remove (sent as -f -f).
+    /// </summary>
+    public static bool IsLockedWorktreeError(string? errorMessage)
+    {
+        if (string.IsNullOrWhiteSpace(errorMessage))
+        {
+            return false;
+        }
+
+        return errorMessage.Contains("locked working tree", StringComparison.OrdinalIgnoreCase) ||
+            errorMessage.Contains("remove -f -f", StringComparison.OrdinalIgnoreCase) ||
+            errorMessage.Contains("unlock first", StringComparison.OrdinalIgnoreCase) ||
+            (errorMessage.Contains("locked", StringComparison.OrdinalIgnoreCase) &&
+                errorMessage.Contains("worktree", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Indicates whether a remove failure should offer the user a force remove dialog
+    /// (dirty worktree or locked worktree — force covers both).
+    /// </summary>
+    public static bool ShouldOfferForceRemove(string? errorMessage) =>
+        IsDirtyWorktreeError(errorMessage) || IsLockedWorktreeError(errorMessage);
 
     internal static bool IsLongPathError(string? errorMessage)
     {
@@ -441,7 +517,7 @@ public class GitService : IGitService
             // -uno (no untracked) is fast, but user specifically wants untracked.
             // Using -unormal is usually faster than -uall.
             GitProcessResult statusRes =
-                await ExecuteGitCommandAsync(path, "status --porcelain=v1 -unormal", statusCts.Token);
+                await ExecuteGitCommandAsync(path, new[] { "status", "--porcelain=v1", "-unormal" }, statusCts.Token);
 
             int modified = 0;
             int untracked = 0;
@@ -480,7 +556,7 @@ public class GitService : IGitService
                 upstreamCts.CancelAfter(5000);
 
                 GitProcessResult upstreamRes = await ExecuteGitCommandAsync(path,
-                    "rev-parse --abbrev-ref --symbolic-full-name @{u}", upstreamCts.Token);
+                    new[] { "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}" }, upstreamCts.Token);
 
                 if (upstreamRes.Success && !string.IsNullOrWhiteSpace(upstreamRes.Output))
                 {
@@ -489,7 +565,7 @@ public class GitService : IGitService
                     
                     // Get ahead/behind counts
                     GitProcessResult countRes = await ExecuteGitCommandAsync(path,
-                        "rev-list --left-right --count HEAD...@{u}", upstreamCts.Token);
+                        new[] { "rev-list", "--left-right", "--count", "HEAD...@{u}" }, upstreamCts.Token);
                     if (countRes.Success && !string.IsNullOrWhiteSpace(countRes.Output))
                     {
                         string[] parts = countRes.Output.Trim()

@@ -90,6 +90,12 @@ public class WorktreeToolWindow : ToolWindow
                 return;
             }
 
+            if (_solutionService == null || _gitService == null)
+            {
+                _loggerService.LogError("Solution or Git service unavailable - skipping solution monitoring");
+                return;
+            }
+
             await _solutionService.InitializeAsync();
 
             // Set initial repository path and refresh
@@ -117,6 +123,14 @@ public class WorktreeToolWindow : ToolWindow
         {
             _loggerService.LogInformation("Checking Git installation");
 
+            if (_gitService == null)
+            {
+                _loggerService.LogError("Git service unavailable");
+                _gitInstalled = false;
+                _viewModel.SetGitNotInstalledError();
+                return;
+            }
+
             _gitInstalled = await _gitService.IsGitInstalledAsync();
 
             if (!_gitInstalled)
@@ -127,10 +141,13 @@ public class WorktreeToolWindow : ToolWindow
                 _viewModel.SetGitNotInstalledError();
 
                 // Show notification to user
-                await _notificationService.ShowErrorAsync(
-                    "Git is not installed or not found in PATH",
-                    "Please install Git and ensure it is added to your system PATH. " +
-                    "You can download Git from https://git-scm.com/downloads");
+                if (_notificationService != null)
+                {
+                    await _notificationService.ShowErrorAsync(
+                        "Git is not installed or not found in PATH",
+                        "Please install Git and ensure it is added to your system PATH. " +
+                        "You can download Git from https://git-scm.com/downloads");
+                }
             }
             else
             {
@@ -188,6 +205,12 @@ public class WorktreeToolWindow : ToolWindow
     {
         try
         {
+            if (_gitService == null)
+            {
+                _loggerService.LogError("Git service unavailable - cannot resolve repository path");
+                return;
+            }
+
             // Find the Git repository root from the solution directory
             string? repositoryRoot = await _gitService.GetRepositoryRootAsync(solutionDirectory);
 

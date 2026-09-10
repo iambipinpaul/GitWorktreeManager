@@ -75,8 +75,11 @@ class GitService(
         worktreePath: String,
         force: Boolean = false,
     ): GitCommandResult<Unit> {
+        // A single --force removes dirty worktrees, but locked worktrees require
+        // -f -f, so send --force twice whenever force is requested.
         val args = mutableListOf("worktree", "remove")
         if (force) {
+            args.add("--force")
             args.add("--force")
         }
         args.add(worktreePath)

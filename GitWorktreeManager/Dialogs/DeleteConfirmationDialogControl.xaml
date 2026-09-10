@@ -40,7 +40,7 @@
 
         <!-- Checkbox Confirmation -->
         <CheckBox Grid.Row="1"
-                  Content="I understand that uncommitted changes will be PERMANENTLY lost."
+                  Content="{Binding ConfirmationText}"
                   IsChecked="{Binding HasConfirmedRisk, Mode=TwoWay}"
                   Margin="0,8,0,16"
                   Foreground="#F48771" />

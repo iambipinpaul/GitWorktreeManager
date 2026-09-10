@@ -313,7 +313,7 @@ class WorktreePanel(private val project: Project) : JBPanel<WorktreePanel>(Borde
 
             if (!force && shouldOfferForceRemove(lower)) {
                 ApplicationManager.getApplication().invokeLater {
-                    val dialog = DeleteConfirmationDialog(project, worktree)
+                    val dialog = DeleteConfirmationDialog(project, worktree, isLockedError(lower))
                     if (dialog.showAndGet() && dialog.forceRemove) {
                         removeWorktree(root, worktree, true)
                     }
@@ -346,7 +346,14 @@ class WorktreePanel(private val project: Project) : JBPanel<WorktreePanel>(Borde
     private fun shouldOfferForceRemove(errorMessage: String): Boolean {
         return errorMessage.contains("modified or untracked files") ||
             errorMessage.contains("contains modified or untracked files") ||
-            errorMessage.contains("forcing it")
+            errorMessage.contains("forcing it") ||
+            isLockedError(errorMessage)
+    }
+
+    private fun isLockedError(errorMessage: String): Boolean {
+        return errorMessage.contains("locked working tree") ||
+            errorMessage.contains("remove -f -f") ||
+            errorMessage.contains("unlock first")
     }
 
     private fun canRemove(worktree: Worktree): Boolean {
@@ -380,14 +387,15 @@ class WorktreePanel(private val project: Project) : JBPanel<WorktreePanel>(Borde
             return root
         }
 
-        // Prefer a solution at the root so the common case stays fast, then fall back
-        // to a bounded recursive search so a solution in a subdirectory is still found.
-        val rootSolution = pickSolution(enumerateSolutionFiles(root, maxDepth = 0))
-        if (rootSolution != null) {
-            return rootSolution
+        // Prefer a solution at the root so the common case stays fast.
+        // If the root contains any solution files, the root wins (or null when
+        // ambiguous) — do not let nested results poison an ambiguous root.
+        val rootFiles = enumerateSolutionFiles(root, maxDepth = 0)
+        if (rootFiles.isNotEmpty()) {
+            return pickSolution(rootFiles) ?: root
         }
 
-        val nestedSolution = pickSolution(enumerateSolutionFiles(root, MAX_SOLUTION_SEARCH_DEPTH))
+        val nestedSolution = pickSolution(enumerateSubdirectorySolutionFiles(root, MAX_SOLUTION_SEARCH_DEPTH))
         return nestedSolution ?: root
     }
 
@@ -414,6 +422,22 @@ class WorktreePanel(private val project: Project) : JBPanel<WorktreePanel>(Borde
     private fun enumerateSolutionFiles(root: File, maxDepth: Int): List<File> {
         val results = mutableListOf<File>()
         collectSolutionFiles(root, maxDepth, results)
+        return results
+    }
+
+    private fun enumerateSubdirectorySolutionFiles(root: File, maxDepth: Int): List<File> {
+        val results = mutableListOf<File>()
+        val entries = root.listFiles() ?: return results
+        for (entry in entries) {
+            if (!entry.isDirectory) {
+                continue
+            }
+            val name = entry.name
+            if (name.startsWith('.') || EXCLUDED_SEARCH_DIRECTORIES.any { it.equals(name, ignoreCase = true) }) {
+                continue
+            }
+            collectSolutionFiles(entry, maxDepth - 1, results)
+        }
         return results
     }
 
