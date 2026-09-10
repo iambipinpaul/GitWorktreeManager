@@ -30,6 +30,7 @@ public class WorktreeViewModel : INotifyPropertyChanged
     private string? _searchFilter;
     private ObservableCollection<WorktreeItemViewModel> _filteredWorktrees;
     private CancellationTokenSource? _enrichmentCts;
+    private CancellationTokenSource? _searchDebounceCts;
 
     /// <summary>
     /// Initializes a new instance of the WorktreeViewModel.
@@ -287,6 +288,7 @@ public class WorktreeViewModel : INotifyPropertyChanged
 
     /// <summary>
     /// The current error message, if any.
+    /// Setting an error clears any success message so the two banners never overlap.
     /// </summary>
     [DataMember]
     public string? ErrorMessage
@@ -297,12 +299,19 @@ public class WorktreeViewModel : INotifyPropertyChanged
             if (SetProperty(ref _errorMessage, value))
             {
                 OnPropertyChanged(nameof(HasError));
+                if (value != null && _successMessage != null)
+                {
+                    _successMessage = null;
+                    OnPropertyChanged(nameof(SuccessMessage));
+                    OnPropertyChanged(nameof(HasSuccess));
+                }
             }
         }
     }
 
     /// <summary>
     /// The current success message, if any.
+    /// Setting a success clears any error message so the two banners never overlap.
     /// </summary>
     [DataMember]
     public string? SuccessMessage
@@ -313,6 +322,12 @@ public class WorktreeViewModel : INotifyPropertyChanged
             if (SetProperty(ref _successMessage, value))
             {
                 OnPropertyChanged(nameof(HasSuccess));
+                if (value != null && _errorMessage != null)
+                {
+                    _errorMessage = null;
+                    OnPropertyChanged(nameof(ErrorMessage));
+                    OnPropertyChanged(nameof(HasError));
+                }
             }
         }
     }
@@ -329,6 +344,7 @@ public class WorktreeViewModel : INotifyPropertyChanged
 
     /// <summary>
     /// The search filter text for filtering worktrees.
+    /// Filtering is debounced (200ms) so fast typing triggers a single refresh.
     /// </summary>
     [DataMember]
     public string? SearchFilter
@@ -338,7 +354,7 @@ public class WorktreeViewModel : INotifyPropertyChanged
         {
             if (SetProperty(ref _searchFilter, value))
             {
-                UpdateFilteredWorktrees();
+                DebounceFilter();
             }
         }
     }
@@ -415,16 +431,26 @@ public class WorktreeViewModel : INotifyPropertyChanged
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
-        // Cancel any previous enrichment
-        if (_enrichmentCts != null)
+        // Cancel any previous enrichment and replace the CTS (dispose the old one).
+        CancellationTokenSource newCts = new();
+        CancellationTokenSource? previousCts = Interlocked.Exchange(ref _enrichmentCts, newCts);
+        if (previousCts != null)
         {
-            await _enrichmentCts.CancelAsync();
+            try
+            {
+                await previousCts.CancelAsync();
+            }
+            catch
+            {
+                // Ignore cancellation errors from a stale refresh.
+            }
+            finally
+            {
+                previousCts.Dispose();
+            }
         }
 
-        _enrichmentCts = new CancellationTokenSource();
-        // Link with the passed token if needed, but usually enrichment can run independently until refresh
-        CancellationToken linkedToken = CancellationTokenSource
-            .CreateLinkedTokenSource(cancellationToken, _enrichmentCts.Token).Token;
+        CancellationToken enrichmentToken = newCts.Token;
 
         // Don't refresh if Git is not installed
         if (IsGitNotInstalled)
@@ -436,7 +462,7 @@ public class WorktreeViewModel : INotifyPropertyChanged
         {
             HasRepository = false;
             Worktrees.Clear();
-            FilteredWorktrees.Clear();
+            FilteredWorktrees = new ObservableCollection<WorktreeItemViewModel>();
             ErrorMessage = null;
             OnPropertyChanged(nameof(ShowNoWorktreesMessage));
             OnPropertyChanged(nameof(ShowWorktreeList));
@@ -474,7 +500,7 @@ public class WorktreeViewModel : INotifyPropertyChanged
 
                 // PHASE 2: Background Enrichment
                 // Fire and forget (monitored by _enrichmentCts)
-                _ = EnrichWorktreesAsync(Worktrees.ToList(), _enrichmentCts.Token);
+                _ = EnrichWorktreesAsync(Worktrees.ToList(), enrichmentToken);
             }
             else
             {
@@ -482,13 +508,12 @@ public class WorktreeViewModel : INotifyPropertyChanged
                 string errorMsg = result.ErrorMessage ?? "Failed to retrieve worktrees";
                 ErrorMessage = errorMsg;
                 Worktrees.Clear();
-                FilteredWorktrees.Clear();
+                FilteredWorktrees = new ObservableCollection<WorktreeItemViewModel>();
                 OnPropertyChanged(nameof(ShowNoWorktreesMessage));
                 OnPropertyChanged(nameof(ShowWorktreeList));
 
-                // Show notification for git errors (includes stderr)
-                await ShowErrorNotificationAsync("Failed to retrieve worktrees", result.ErrorMessage,
-                    cancellationToken);
+                // Auto-refresh failures surface via the error banner only — no modal
+                // prompt, otherwise background polls would spam the user.
             }
         }
         catch (OperationCanceledException)
@@ -501,10 +526,10 @@ public class WorktreeViewModel : INotifyPropertyChanged
             string errorMsg = $"Error refreshing worktrees: {ex.Message}";
             ErrorMessage = errorMsg;
             Worktrees.Clear();
-            FilteredWorktrees.Clear();
+            FilteredWorktrees = new ObservableCollection<WorktreeItemViewModel>();
             OnPropertyChanged(nameof(ShowNoWorktreesMessage));
             OnPropertyChanged(nameof(ShowWorktreeList));
-            await ShowErrorNotificationAsync(errorMsg, cancellationToken);
+            // Banner only — explicit actions (Add/Remove) still show modals.
         }
         finally
         {
@@ -517,24 +542,56 @@ public class WorktreeViewModel : INotifyPropertyChanged
     {
         try
         {
-            // Use Parallel.ForEachAsync to limit concurrency to 4
+            // PHASE 1: fetch statuses in parallel (IO-bound git calls, max 4 at a time).
+            var statuses = new System.Collections.Concurrent.ConcurrentDictionary<string, WorktreeStatus>();
             var options = new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct };
 
             await Parallel.ForEachAsync(items, options, async (item, token) =>
             {
-                // Skip if path is invalid
                 if (string.IsNullOrEmpty(item.Path) || !Directory.Exists(item.Path))
                 {
-                    item.IsLoadingStatus = false;
-                    item.StatusSummary = "Invalid path";
                     return;
                 }
 
                 try
                 {
                     WorktreeStatus status = await _gitService.GetWorktreeStatusAsync(item.Path, item.BranchName, token);
+                    statuses[item.Path] = status;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Ignore — superseded by a newer refresh.
+                }
+                catch
+                {
+                    // Recorded as failure during apply below.
+                }
+            });
 
-                    // Update properties on the view model
+            // PHASE 2: apply sequentially on one thread so Remote UI gets a
+            // predictable burst of PropertyChanged events instead of races.
+            foreach (WorktreeItemViewModel item in items)
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                // Skip items removed by a newer refresh.
+                if (!Worktrees.Contains(item))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(item.Path) || !Directory.Exists(item.Path))
+                {
+                    item.IsLoadingStatus = false;
+                    item.StatusSummary = "Invalid path";
+                    continue;
+                }
+
+                if (statuses.TryGetValue(item.Path, out WorktreeStatus? status))
+                {
                     item.UncommittedChangesCount = status.ModifiedCount;
                     item.UntrackedChangesCount = status.UntrackedCount;
                     item.HasUncommittedChanges = status.ModifiedCount > 0;
@@ -543,19 +600,13 @@ public class WorktreeViewModel : INotifyPropertyChanged
                     item.OutgoingCommits = status.Outgoing;
                     item.StatusSummary = FormatStatusSummary(status);
                 }
-                catch (OperationCanceledException)
-                {
-                    // Ignore
-                }
-                catch
+                else if (!ct.IsCancellationRequested)
                 {
                     item.StatusSummary = "Failed to load status";
                 }
-                finally
-                {
-                    item.IsLoadingStatus = false;
-                }
-            });
+
+                item.IsLoadingStatus = false;
+            }
         }
         catch (OperationCanceledException)
         {
@@ -643,104 +694,28 @@ public class WorktreeViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Maximum directory depth to search when no solution is found at the worktree root.
-    /// </summary>
-    private const int MaxSolutionSearchDepth = 4;
-
-    /// <summary>
-    /// Directories that are skipped while searching for solution files because they
-    /// never contain a user-authored solution and can be expensive to traverse.
-    /// </summary>
-    private static readonly string[] ExcludedSearchDirectories =
-    {
-        ".git", "bin", "obj", "node_modules", ".vs", ".vscode", "packages", "TestResults"
-    };
-
-    /// <summary>
     /// Finds the most appropriate solution file to open for a worktree.
-    /// Searches the root directory first and falls back to a bounded recursive
-    /// search so solutions located in a subdirectory are still detected.
+    /// Delegates to <see cref="SolutionFinder"/> (tested in Core).
     /// </summary>
     /// <param name="rootPath">The worktree root directory.</param>
     /// <returns>The full path of the solution to open, or <c>null</c> when none is unambiguous.</returns>
-    private static string? FindBestSolutionFile(string rootPath)
-    {
-        // Prefer a solution at the root so the common case stays fast.
-        string? rootSolution = PickSolution(EnumerateSolutionFiles(rootPath, maxDepth: 0));
-        if (rootSolution != null)
-        {
-            return rootSolution;
-        }
-
-        // Nothing at the root - search subdirectories (e.g. solution under src/).
-        return PickSolution(EnumerateSolutionFiles(rootPath, MaxSolutionSearchDepth));
-    }
+    private static string? FindBestSolutionFile(string rootPath) =>
+        SolutionFinder.FindBestSolutionFile(rootPath);
 
     /// <summary>
     /// Chooses a single solution file from the candidates, preferring <c>.slnx</c>
     /// over <c>.sln</c> when both are present. Returns <c>null</c> when the choice is
     /// ambiguous (no candidates, or multiple of the preferred kind).
     /// </summary>
-    private static string? PickSolution(List<string> files)
-    {
-        if (files.Count == 0)
-        {
-            return null;
-        }
-
-        // Prefer .slnx over .sln when both exist (see .github/copilot-instructions.md).
-        var slnx = files.Where(f => f.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)).ToList();
-        var candidates = slnx.Count > 0 ? slnx : files;
-
-        return candidates.Count == 1 ? candidates[0] : null;
-    }
+    private static string? PickSolution(List<string> files) =>
+        SolutionFinder.PickSolution(files);
 
     /// <summary>
     /// Recursively collects <c>.sln</c>/<c>.slnx</c> files up to <paramref name="maxDepth"/>
     /// levels below <paramref name="rootPath"/>, skipping build and tooling directories.
     /// </summary>
-    private static List<string> EnumerateSolutionFiles(string rootPath, int maxDepth)
-    {
-        var results = new List<string>();
-        CollectSolutionFiles(rootPath, maxDepth, results);
-        return results;
-    }
-
-    private static void CollectSolutionFiles(string directory, int remainingDepth, List<string> results)
-    {
-        try
-        {
-            foreach (string file in Directory.EnumerateFiles(directory))
-            {
-                if (file.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
-                    file.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
-                {
-                    results.Add(file);
-                }
-            }
-
-            if (remainingDepth <= 0)
-            {
-                return;
-            }
-
-            foreach (string subDirectory in Directory.EnumerateDirectories(directory))
-            {
-                string name = Path.GetFileName(subDirectory);
-                if (name.StartsWith('.') ||
-                    ExcludedSearchDirectories.Contains(name, StringComparer.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                CollectSolutionFiles(subDirectory, remainingDepth - 1, results);
-            }
-        }
-        catch (Exception)
-        {
-            // Ignore directories we cannot enumerate (e.g. access denied).
-        }
-    }
+    private static List<string> EnumerateSolutionFiles(string rootPath, int maxDepth) =>
+        SolutionFinder.EnumerateSolutionFiles(rootPath, maxDepth);
 
     /// <summary>
     /// Removes a worktree from the repository.
@@ -1094,14 +1069,54 @@ public class WorktreeViewModel : INotifyPropertyChanged
     }
 
     /// <summary>
+    /// Debounces search filtering so fast typing triggers a single refresh.
+    /// </summary>
+    private void DebounceFilter()
+    {
+        CancellationTokenSource? previous = Interlocked.Exchange(
+            ref _searchDebounceCts, new CancellationTokenSource());
+        try
+        {
+            previous?.Cancel();
+        }
+        catch
+        {
+            // Ignore cancellation errors from a stale debounce.
+        }
+        finally
+        {
+            previous?.Dispose();
+        }
+
+        CancellationTokenSource? current = _searchDebounceCts;
+        if (current == null)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(200, current.Token);
+                UpdateFilteredWorktrees();
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by newer keystrokes.
+            }
+        });
+    }
+
+    /// <summary>
     /// Updates the filtered worktrees collection based on the search filter.
+    /// Replaces the collection in one shot so Remote UI serializes a single update.
     /// </summary>
     private void UpdateFilteredWorktrees()
     {
-        FilteredWorktrees.Clear();
-
         string filter = SearchFilter?.Trim() ?? string.Empty;
 
+        var matches = new List<WorktreeItemViewModel>(Worktrees.Count);
         foreach (WorktreeItemViewModel worktree in Worktrees)
         {
             if (string.IsNullOrEmpty(filter) ||
@@ -1109,9 +1124,11 @@ public class WorktreeViewModel : INotifyPropertyChanged
                 worktree.BranchName.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
                 worktree.Path.Contains(filter, StringComparison.OrdinalIgnoreCase))
             {
-                FilteredWorktrees.Add(worktree);
+                matches.Add(worktree);
             }
         }
+
+        FilteredWorktrees = new ObservableCollection<WorktreeItemViewModel>(matches);
 
         OnPropertyChanged(nameof(ShowNoWorktreesMessage));
         OnPropertyChanged(nameof(ShowWorktreeList));

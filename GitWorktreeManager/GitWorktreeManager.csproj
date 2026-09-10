@@ -12,7 +12,7 @@
     <AssemblyName>GitWorktreeManager</AssemblyName>
 
     <!-- Extension Metadata -->
-    <Version>1.0.20</Version>
+    <Version>1.0.21</Version>
     <Authors>Bipin Paul</Authors>
     <Description>Manage Git worktrees from within Visual Studio</Description>
   </PropertyGroup>

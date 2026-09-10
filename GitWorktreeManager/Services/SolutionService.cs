@@ -11,17 +11,19 @@ using Microsoft.VisualStudio.ProjectSystem.Query;
 public class SolutionService : ISolutionService
 {
     private const int DebounceDelayMs = 500;
+    private static readonly TimeSpan PollDueTime = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan PollPeriod = TimeSpan.FromSeconds(5);
 
     private readonly VisualStudioExtensibility _extensibility;
     private readonly ILoggerService? _logger;
     private readonly object _debounceLock = new();
 
     private CancellationTokenSource? _debounceCts;
-    private Timer? _debounceTimer;
+    private Timer? _pollingTimer;
     private string? _currentSolutionDirectory;
     private string? _pendingSolutionDirectory;
     private bool _isDisposed;
-    private IDisposable? _solutionSubscription;
+    private int _checkInFlight;
 
     /// <inheritdoc />
     public event EventHandler<SolutionChangedEventArgs>? SolutionChanged;
@@ -67,16 +69,19 @@ public class SolutionService : ISolutionService
 
     /// <summary>
     /// Starts polling for solution changes.
+    /// Polls every 5s (after a 2s initial delay) — a slower cadence than before
+    /// to avoid hammering the out-of-proc workspace query. Overlapping ticks are
+    /// skipped via an interlocked flag.
     /// </summary>
     private void StartSolutionPolling()
     {
         // Use a timer to periodically check for solution changes
         // This is a workaround for the lack of direct solution events in the out-of-process model
-        _debounceTimer = new Timer(
+        _pollingTimer = new Timer(
             OnPollingTimerCallback,
             null,
-            TimeSpan.FromSeconds(1),
-            TimeSpan.FromSeconds(2));
+            PollDueTime,
+            PollPeriod);
     }
 
     /// <summary>
@@ -90,6 +95,7 @@ public class SolutionService : ISolutionService
 
     /// <summary>
     /// Checks if the solution has changed and raises the event if needed.
+    /// Skips overlapping ticks so slow workspace queries never pile up.
     /// </summary>
     private async Task CheckForSolutionChangeAsync()
     {
@@ -98,10 +104,20 @@ public class SolutionService : ISolutionService
             return;
         }
 
+        if (Interlocked.Exchange(ref _checkInFlight, 1) != 0)
+        {
+            return;
+        }
+
         try
         {
             string? previousDirectory = _currentSolutionDirectory;
             await RefreshCurrentSolutionAsync(CancellationToken.None);
+
+            if (_isDisposed)
+            {
+                return;
+            }
 
             if (!string.Equals(previousDirectory, _currentSolutionDirectory, StringComparison.OrdinalIgnoreCase))
             {
@@ -113,6 +129,10 @@ public class SolutionService : ISolutionService
         catch (Exception ex)
         {
             _logger?.LogException(ex, "Error checking for solution change");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _checkInFlight, 0);
         }
     }
 
@@ -165,44 +185,64 @@ public class SolutionService : ISolutionService
     /// <param name="solutionDirectory">The new solution directory.</param>
     private void RaiseSolutionChangedDebounced(string? solutionDirectory)
     {
+        CancellationTokenSource newCts = new();
+        CancellationTokenSource? oldCts;
         lock (_debounceLock)
         {
-            // Cancel any pending debounce operation
-            _debounceCts?.Cancel();
-            _debounceCts?.Dispose();
-            _debounceCts = new CancellationTokenSource();
-
+            oldCts = _debounceCts;
+            _debounceCts = newCts;
             _pendingSolutionDirectory = solutionDirectory;
-
-            // Schedule the debounced event
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.Delay(DebounceDelayMs, _debounceCts.Token);
-
-                    // If we get here, the delay completed without cancellation
-                    string? directoryToRaise;
-                    lock (_debounceLock)
-                    {
-                        directoryToRaise = _pendingSolutionDirectory;
-                    }
-
-                    _logger?.LogInformation(
-                        $"Raising debounced SolutionChanged event for: {directoryToRaise ?? "(none)"}");
-                    SolutionChanged?.Invoke(this, new SolutionChangedEventArgs(directoryToRaise));
-                }
-                catch (OperationCanceledException)
-                {
-                    // Debounce was cancelled by a newer event, which is expected
-                    _logger?.LogInformation("Solution change event debounced (cancelled by newer event)");
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogException(ex, "Error raising SolutionChanged event");
-                }
-            });
         }
+
+        // Cancel and dispose the previous debounce outside the lock.
+        if (oldCts != null)
+        {
+            try
+            {
+                oldCts.Cancel();
+            }
+            catch
+            {
+                // Ignore cancellation errors from a stale debounce.
+            }
+            finally
+            {
+                oldCts.Dispose();
+            }
+        }
+
+        // Schedule the debounced event
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(DebounceDelayMs, newCts.Token);
+
+                string? directoryToRaise;
+                lock (_debounceLock)
+                {
+                    directoryToRaise = _pendingSolutionDirectory;
+                }
+
+                if (_isDisposed)
+                {
+                    return;
+                }
+
+                _logger?.LogInformation(
+                    $"Raising debounced SolutionChanged event for: {directoryToRaise ?? "(none)"}");
+                SolutionChanged?.Invoke(this, new SolutionChangedEventArgs(directoryToRaise));
+            }
+            catch (OperationCanceledException)
+            {
+                // Debounce was cancelled by a newer event, which is expected
+                _logger?.LogInformation("Solution change event debounced (cancelled by newer event)");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogException(ex, "Error raising SolutionChanged event");
+            }
+        });
     }
 
     /// <summary>
@@ -223,18 +263,31 @@ public class SolutionService : ISolutionService
 
         _logger?.LogInformation("Disposing SolutionService");
 
-        _debounceTimer?.Dispose();
-        _debounceTimer = null;
+        _pollingTimer?.Dispose();
+        _pollingTimer = null;
 
+        CancellationTokenSource? debounceCts;
         lock (_debounceLock)
         {
-            _debounceCts?.Cancel();
-            _debounceCts?.Dispose();
+            debounceCts = _debounceCts;
             _debounceCts = null;
         }
 
-        _solutionSubscription?.Dispose();
-        _solutionSubscription = null;
+        if (debounceCts != null)
+        {
+            try
+            {
+                debounceCts.Cancel();
+            }
+            catch
+            {
+                // Ignore errors during dispose.
+            }
+            finally
+            {
+                debounceCts.Dispose();
+            }
+        }
 
         GC.SuppressFinalize(this);
     }

@@ -46,4 +46,10 @@ intellijPlatform {
             sinceBuild = providers.gradleProperty("pluginSinceBuild")
         }
     }
+
+    pluginVerification {
+        ides {
+            recommended()
+        }
+    }
 }

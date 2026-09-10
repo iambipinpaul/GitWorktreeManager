@@ -18,6 +18,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -76,8 +77,19 @@
             </Grid>
         </Border>
 
-        <!-- Loading Indicator -->
+        <!-- Followed repository path -->
         <Border Grid.Row="1"
+                Padding="8,4,8,2"
+                Visibility="{Binding HasRepository, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="{Binding RepositoryPath}"
+                       FontSize="11"
+                       Opacity="0.7"
+                       TextTrimming="CharacterEllipsis"
+                       ToolTip="{Binding RepositoryPath}" />
+        </Border>
+
+        <!-- Loading Indicator -->
+        <Border Grid.Row="2"
                 Background="{DynamicResource {x:Static colors:EnvironmentColors.CommandBarGradientBeginBrushKey}}"
                 Padding="8,4"
                 Visibility="{Binding IsLoading, Converter={StaticResource BoolToVis}}">
@@ -88,7 +100,7 @@
         </Border>
 
         <!-- Content -->
-        <Grid Grid.Row="2"
+        <Grid Grid.Row="3"
               Background="{DynamicResource {x:Static styles:VsBrushes.ToolWindowBackgroundKey}}">
 
             <!-- Empty State - No Repository -->
@@ -391,7 +403,7 @@
         </Grid>
 
         <!-- Status Bar with Error/Success Messages -->
-        <Border Grid.Row="3"
+        <Border Grid.Row="4"
                 Background="#442222"
                 Padding="12,8"
                 Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}">
@@ -412,7 +424,7 @@
                 </Button>
             </Grid>
         </Border>
-        <Border Grid.Row="3"
+        <Border Grid.Row="4"
                 Background="#224422"
                 Padding="12,8"
                 Visibility="{Binding HasSuccess, Converter={StaticResource BoolToVis}}">

@@ -63,4 +63,34 @@ public class GitServiceTests
 
         result.Should().Be(errorMessage);
     }
+
+    [Fact]
+    public void BuildGitArgumentList_WhenLongPathSupportEnabled_PrependsConfig()
+    {
+        List<string> result = GitService.BuildGitArgumentList(
+            new[] { "worktree", "list", "--porcelain" }, true);
+
+        result.Should().Equal("-c", "core.longpaths=true", "worktree", "list", "--porcelain");
+    }
+
+    [Fact]
+    public void BuildGitArgumentList_WhenLongPathSupportDisabled_LeavesArgumentsUnchanged()
+    {
+        List<string> result = GitService.BuildGitArgumentList(
+            new[] { "worktree", "list", "--porcelain" }, false);
+
+        result.Should().Equal("worktree", "list", "--porcelain");
+    }
+
+    [Fact]
+    public void BuildGitArgumentList_PreservesPathsWithSpacesAsSingleArg()
+    {
+        string pathWithSpaces = @"C:\repos\my repo\feature branch";
+
+        List<string> result = GitService.BuildGitArgumentList(
+            new[] { "worktree", "add", pathWithSpaces, "my-branch" }, false);
+
+        result.Should().Contain(pathWithSpaces);
+        result.Should().HaveCount(4);
+    }
 }
